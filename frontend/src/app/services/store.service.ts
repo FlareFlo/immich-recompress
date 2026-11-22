@@ -1,7 +1,7 @@
 import { computed, effect, Injectable, signal } from '@angular/core';
 import {
   Capabilities, CaptureDateFilter, MetadataFilter, emptyMetadataFilter, EncoderInfo, JobPublic, JobStatus, KeyOwner, MediaType, ProcessedEntry,
-  Settings, SortField, SortOrder, SseJobUpdate, User, VideoSummary,
+  QueuePauseState, Settings, SortField, SortOrder, SseJobUpdate, TempStorageInfo, User, VideoSummary,
 } from '../models/api.models';
 import { rfEquivalent } from '../utils/quality-scale';
 
@@ -122,6 +122,20 @@ export class StoreService {
   readonly jobs = signal<Record<string, JobPublic>>({});
   readonly activeId = signal<string | null>(null);
   readonly savedBytes = signal(0);
+  readonly tempStorage = signal<TempStorageInfo | null>(null);
+  readonly queuePause = signal<QueuePauseState>({
+    paused: false,
+    manual: false,
+    auto: false,
+    reason: null,
+  });
+  readonly tempStorageLevel = computed<'normal' | 'warn' | 'low'>(() => {
+    const tmp = this.tempStorage();
+    if (!tmp) return 'normal';
+    if (tmp.low_space) return 'low';
+    if (tmp.used_pct >= 75) return 'warn';
+    return 'normal';
+  });
 
   // --- selection ---
   readonly selected = signal<Set<string>>(new Set());

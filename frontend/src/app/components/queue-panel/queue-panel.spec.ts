@@ -124,3 +124,116 @@ describe('finished skips', () => {
     expect(finished().querySelector('li .text-success')).toBeNull();
   });
 });
+
+describe('temp storage and queue pause', () => {
+  let fixture: ComponentFixture<QueuePanelComponent>;
+  let store: StoreService;
+  let http: HttpTestingController;
+
+  const gib = 1024 ** 3;
+  const element = (): HTMLElement => fixture.nativeElement;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [QueuePanelComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    fixture = TestBed.createComponent(QueuePanelComponent);
+    store = TestBed.inject(StoreService);
+    http = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => http.verify());
+
+  it('displays temp storage usage and app intermediate bytes', async () => {
+    store.tempStorage.set({
+      path: '/tmp/immich_recompress_ui',
+      total: 20 * gib,
+      used: 5 * gib,
+      free: 15 * gib,
+      used_pct: 25,
+      app_bytes: 2 * gib,
+      work_bytes: gib,
+      backup_bytes: gib,
+      max_used_pct: 90,
+      min_free_bytes: gib,
+      low_space: false,
+    });
+    await fixture.whenStable();
+    const card = element().querySelector('[aria-label="Temp storage"]')!;
+    expect(card.textContent).toContain('5.0 GB / 20.0 GB (25%)');
+    expect(card.textContent).toContain('2.0 GB held for queue/review');
+    expect(card.textContent).toContain('15.0 GB free');
+  });
+
+  it('shows pause banner and triggers resume request', async () => {
+    const refreshed = vi.fn();
+    fixture.componentInstance.jobsRefresh.subscribe(refreshed);
+    store.tempStorage.set({
+      path: '/tmp/immich_recompress_ui',
+      total: 10 * gib,
+      used: 9.2 * gib,
+      free: 0.8 * gib,
+      used_pct: 92,
+      app_bytes: 3 * gib,
+      work_bytes: gib,
+      backup_bytes: 2 * gib,
+      max_used_pct: 90,
+      min_free_bytes: gib,
+      low_space: true,
+    });
+    store.queuePause.set({
+      paused: true,
+      manual: false,
+      auto: true,
+      reason: 'Temp storage is 92% full (819.2 MB free)',
+    });
+    await fixture.whenStable();
+
+    const card = element().querySelector('[aria-label="Temp storage"]')!;
+    expect(card.textContent).toContain('Queue paused');
+    expect(card.textContent).toContain('Temp storage is 92% full');
+
+    const resumeBtn = [...card.querySelectorAll('button')].find(b => b.textContent!.includes('Resume'))!;
+    resumeBtn.click();
+    const req = http.expectOne('/api/queue/resume');
+    req.flush({
+      ok: true,
+      pause: { paused: false, manual: false, auto: false, reason: null },
+      temp_storage: store.tempStorage(),
+    });
+    expect(store.queuePause().paused).toBe(false);
+    expect(refreshed).toHaveBeenCalled();
+  });
+
+  it('allows manual pause when jobs are waiting', async () => {
+    store.tempStorage.set({
+      path: '/tmp/immich_recompress_ui',
+      total: 20 * gib,
+      used: 2 * gib,
+      free: 18 * gib,
+      used_pct: 10,
+      app_bytes: 0,
+      work_bytes: 0,
+      backup_bytes: 0,
+      max_used_pct: 90,
+      min_free_bytes: gib,
+      low_space: false,
+    });
+    store.jobs.set({
+      one: { id: 'one', name: 'clip.mp4', status: 'queued', media: 'video' } as JobPublic,
+    });
+    await fixture.whenStable();
+
+    const card = element().querySelector('[aria-label="Temp storage"]')!;
+    const pauseBtn = [...card.querySelectorAll('button')].find(b => b.textContent!.includes('Pause'))!;
+    pauseBtn.click();
+    const req = http.expectOne('/api/queue/pause');
+    req.flush({
+      ok: true,
+      pause: { paused: true, manual: true, auto: false, reason: 'Paused by user' },
+      temp_storage: store.tempStorage(),
+    });
+    expect(store.queuePause().paused).toBe(true);
+  });
+});

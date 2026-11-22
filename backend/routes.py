@@ -19,12 +19,13 @@ from flask import (
 
 from backend.config import (
     ASSET_CACHE_TTL, BACKUP_DIR, FRONTEND_PER_PAGE, HTTP_TIMEOUT,
-    MAX_PER_PAGE, STATIC_DIR,
+    MAX_PER_PAGE, STATIC_DIR, WORK_DIR,
     get_env, human_duration, human_size, parse_duration, utcnow_iso,
 )
 from backend.state import (
     _asset_key_lock, _asset_key_map, _jobs, _queue_order, _state_lock,
     _sub_lock, _subscribers, _work_queue, active_id, kill_proc,
+    pause_status, set_auto_pause, set_manual_pause, wake_worker,
 )
 from backend.db import db_delete_jobs
 from backend.immich_api import (
@@ -39,9 +40,9 @@ from backend.browse import collect_filtered, discover, metadata_filters
 from backend.jobs import (
     broadcast, broadcast_queue_update, cleanup_encoded_file, cleanup_temp, compute_stats,
     do_recompress_motion, do_replace, do_strip_motion, emit_job_update,
-    new_job, persist_if_terminal, public_job, update_job,
+    new_job, persist_if_terminal, public_job, temp_pause_reason, update_job,
 )
-from backend.media import available_encoders, cpu_count, image_preview_path
+from backend.media import available_encoders, cpu_count, image_preview_path, temp_storage_info
 
 bp = Blueprint("main", __name__)
 
@@ -199,6 +200,7 @@ def api_status():
         "ffprobe": ffprobe,
         "ffmpeg": ffmpeg,
         "immich_version": immich_version,
+        "temp_storage": temp_storage_info(work_dir=WORK_DIR, backup_dir=BACKUP_DIR),
     })
 
 
@@ -766,6 +768,7 @@ def api_cancel(asset_id):
         persist_if_terminal(asset_id)
     else:
         kill_proc(asset_id)   # stop the running encode; the worker sets 'cancelled'
+    wake_worker()
     emit_job_update(asset_id)
     broadcast_queue_update()
     return jsonify({"ok": True})
@@ -896,6 +899,7 @@ def api_discard(asset_id):
     cleanup_encoded_file(out_path)
     if backup_path:
         cleanup_temp(backup_path)
+    wake_worker()
     persist_if_terminal(asset_id)
     emit_job_update(asset_id)
     broadcast_queue_update()
@@ -943,8 +947,38 @@ def api_clear():
         if out_path:
             cleanup_temp(image_preview_path(out_path))
     db_delete_jobs(removed)   # also drop them from the persisted history
+    wake_worker()
     broadcast_queue_update()
     return jsonify({"removed": removed})
+
+
+@bp.route("/api/queue/pause", methods=["POST"])
+def api_queue_pause():
+    set_manual_pause(True)
+    broadcast_queue_update()
+    return jsonify({
+        "ok": True,
+        "pause": pause_status(),
+        "temp_storage": temp_storage_info(work_dir=WORK_DIR, backup_dir=BACKUP_DIR),
+    })
+
+
+@bp.route("/api/queue/resume", methods=["POST"])
+def api_queue_resume():
+    storage = temp_storage_info(work_dir=WORK_DIR, backup_dir=BACKUP_DIR)
+    set_manual_pause(False)
+    reason = temp_pause_reason(storage)
+    if reason:
+        set_auto_pause(True, reason)
+    else:
+        set_auto_pause(False, None)
+    wake_worker()
+    broadcast_queue_update()
+    return jsonify({
+        "ok": True,
+        "pause": pause_status(),
+        "temp_storage": storage,
+    })
 
 
 @bp.route("/api/jobs")
@@ -960,6 +994,8 @@ def api_jobs():
         "queue": queue_ids,
         "stats": compute_stats(),
         "jobs": jobs,
+        "pause": pause_status(),
+        "temp_storage": temp_storage_info(work_dir=WORK_DIR, backup_dir=BACKUP_DIR),
     })
 
 
@@ -976,13 +1012,18 @@ def api_events():
         try:
             yield f"event: connected\ndata: {json.dumps({'ts': utcnow_iso()})}\n\n"
             last_heartbeat = time.time()
+            last_storage_emit = 0.0
             while True:
                 try:
-                    event, data = q.get(timeout=15)
+                    event, data = q.get(timeout=5)
                     yield f"event: {event}\ndata: {data}\n\n"
                 except queue.Empty:
                     pass
                 now = time.time()
+                if now - last_storage_emit >= 5:
+                    storage = temp_storage_info(work_dir=WORK_DIR, backup_dir=BACKUP_DIR)
+                    yield f"event: temp_storage\ndata: {json.dumps(storage)}\n\n"
+                    last_storage_emit = now
                 if now - last_heartbeat >= 15:
                     yield ": keepalive\n\n"
                     last_heartbeat = now

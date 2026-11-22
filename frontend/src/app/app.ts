@@ -80,8 +80,25 @@ export class App implements OnInit {
     if (!this.store.loaded()) return 'Ready. Choose Select media above to load media.';
     const s = this.store.queueStats();
     const m = this.store.media();
-    const noun = m === 'image' ? 'Photos' : m === 'motionphoto' ? 'Live Photos' : 'Videos';
-    return `${this.store.total()} ${noun} · ${s.queued} queued · ${s.active} active · ${s.review} review · ${s.done} done · ${s.skipped} skipped · ${s.error} errors`;
+    const noun = m === 'image' ? 'photos' : m === 'motionphoto' ? 'Live Photos' : 'videos';
+    const paused = this.store.queuePause().paused ? ' · paused' : '';
+    return `${this.store.total()} ${noun} · ${s.queued} queued · ${s.active} active · ${s.review} review · ${s.done} done · ${s.skipped} skipped · ${s.error} errors${paused}`;
+  }
+
+  private applyJobsSnapshot(data: {
+    jobs?: Record<string, import('./models/api.models').JobPublic>;
+    active: string | null;
+    stats?: { saved_bytes?: number };
+    pause?: import('./models/api.models').QueuePauseState;
+    temp_storage?: import('./models/api.models').TempStorageInfo;
+  }): void {
+    this.store.jobs.set(data.jobs ?? {});
+    this.store.activeId.set(data.active);
+    if (data.stats?.saved_bytes !== undefined) {
+      this.store.savedBytes.set(data.stats.saved_bytes ?? 0);
+    }
+    if (data.pause) this.store.queuePause.set(data.pause);
+    if (data.temp_storage) this.store.tempStorage.set(data.temp_storage);
   }
 
   ngOnInit(): void {
@@ -91,11 +108,10 @@ export class App implements OnInit {
       this.store.applyJobUpdate(update);
     });
     this.events.queueUpdate$.subscribe(() => {
-      this.api.jobs().subscribe(data => {
-        this.store.jobs.set(data.jobs ?? {});
-        this.store.activeId.set(data.active);
-        this.store.savedBytes.set(data.stats?.saved_bytes ?? 0);
-      });
+      this.api.jobs().subscribe(data => this.applyJobsSnapshot(data));
+    });
+    this.events.tempStorage$.subscribe(storage => {
+      this.store.tempStorage.set(storage);
     });
   }
 
@@ -106,14 +122,13 @@ export class App implements OnInit {
       this.store.handbrake.set(s.handbrake);
       this.store.ffprobe.set(s.ffprobe);
       this.store.ffmpeg.set(s.ffmpeg);
+      if (s.temp_storage) this.store.tempStorage.set(s.temp_storage);
     });
     this.api.capabilities().subscribe(c => this.store.applyCapabilities(c));
     this.api.users().subscribe(data => this.store.users.set(data.users ?? []));
     this.api.keyOwners().subscribe(data => this.store.keyOwners.set(data.owners ?? []));
     this.api.jobs().subscribe(data => {
-      this.store.jobs.set(data.jobs ?? {});
-      this.store.activeId.set(data.active);
-      this.store.savedBytes.set(data.stats?.saved_bytes ?? 0);
+      this.applyJobsSnapshot(data);
       for (const [id, job] of Object.entries(data.jobs ?? {})) {
         if (job.status === 'done') this.store.markProcessed(id, job);
       }
@@ -158,10 +173,7 @@ export class App implements OnInit {
       return;
     }
     this.api.enqueue(ids, names, sizes, { ...this.store.settings(), media: this.store.media() }, medias).subscribe(() => {
-      this.api.jobs().subscribe(data => {
-        this.store.jobs.set(data.jobs ?? {});
-        this.store.activeId.set(data.active);
-      });
+      this.api.jobs().subscribe(data => this.applyJobsSnapshot(data));
     });
   }
 
@@ -174,10 +186,6 @@ export class App implements OnInit {
   }
 
   onJobsRefresh(): void {
-    this.api.jobs().subscribe(data => {
-      this.store.jobs.set(data.jobs ?? {});
-      this.store.activeId.set(data.active);
-      this.store.savedBytes.set(data.stats?.saved_bytes ?? 0);
-    });
+    this.api.jobs().subscribe(data => this.applyJobsSnapshot(data));
   }
 }

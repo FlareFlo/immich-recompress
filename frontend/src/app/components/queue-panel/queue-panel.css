@@ -98,3 +98,11 @@
   min-width: 0;
   padding: 8px;
 }
+
+.meter.meter-warn i {
+  background: var(--color-warning);
+}
+
+.meter.meter-danger i {
+  background: var(--color-danger);
+}

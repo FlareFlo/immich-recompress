@@ -128,6 +128,27 @@ export interface JobPublic {
   started_at: string | null;
 }
 
+export interface TempStorageInfo {
+  path: string;
+  total: number;
+  used: number;
+  free: number;
+  used_pct: number;
+  app_bytes: number;
+  work_bytes: number;
+  backup_bytes: number;
+  max_used_pct: number;
+  min_free_bytes: number;
+  low_space: boolean;
+}
+
+export interface QueuePauseState {
+  paused: boolean;
+  manual: boolean;
+  auto: boolean;
+  reason: string | null;
+}
+
 export interface JobsResponse {
   active: string | null;
   queue: string[];
@@ -141,6 +162,8 @@ export interface JobsResponse {
     saved_bytes: number;
   };
   jobs: Record<string, JobPublic>;
+  pause?: QueuePauseState;
+  temp_storage?: TempStorageInfo;
 }
 
 export interface VideosResponse {
@@ -161,6 +184,7 @@ export interface StatusResponse {
   ffprobe: boolean;
   ffmpeg: boolean;
   immich_version?: string;
+  temp_storage?: TempStorageInfo;
 }
 
 export interface User {

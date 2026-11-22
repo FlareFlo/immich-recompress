@@ -5,6 +5,71 @@
 @let running = runningJobs;
 @let waiting = waitingJobs;
 @let finished = finishedJobs;
+@let tmp = store.tempStorage();
+@let pause = store.queuePause();
+
+@if (tmp || pause.paused) {
+  <section class="card" aria-label="Temp storage">
+    <div class="panel-head card-head">
+      <app-icon [path]="mdiHarddisk" [size]="16" />
+      <span>Temp storage</span>
+      <span class="spacer"></span>
+      @if (tmp) {
+        <span class="num text-xs" [class.text-danger]="tmp.low_space"
+          [class.text-warning]="!tmp.low_space && tmp.used_pct >= 75"
+          [class.text-fg]="!tmp.low_space && tmp.used_pct < 75">
+          {{ humanBytes(tmp.used) }} / {{ humanBytes(tmp.total) }} ({{ tmp.used_pct.toFixed(0) }}%)
+        </span>
+      }
+      @if (!pause.paused && (running.length || waiting.length)) {
+        <button class="btn ghost sm" type="button" (click)="pauseQueue()">
+          <app-icon [path]="mdiPause" [size]="14" />
+          Pause
+        </button>
+      }
+    </div>
+
+    @if (tmp) {
+      <div class="px-5 pb-3">
+        <div class="meter" [class.meter-warn]="!tmp.low_space && tmp.used_pct >= 75"
+          [class.meter-danger]="tmp.low_space">
+          <i [style.transform]="'scaleX(' + tempUsedRatio(tmp.used_pct) + ')'"></i>
+        </div>
+        <div class="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-muted">
+          @if (tmp.app_bytes > 0) {
+            <span>{{ humanBytes(tmp.app_bytes) }} held for queue/review</span>
+          } @else {
+            <span>Auto-pauses at {{ tmp.max_used_pct }}% or ≤ {{ humanBytes(tmp.min_free_bytes) }} free</span>
+          }
+          <span>{{ humanBytes(tmp.free) }} free</span>
+        </div>
+      </div>
+    }
+
+    @if (pause.paused) {
+      <div class="mx-3 mb-3 flex items-start gap-2.5 rounded-2xl border px-3.5 py-3"
+        [class.border-danger/30]="pause.auto" [class.bg-danger/10]="pause.auto"
+        [class.border-warning/30]="!pause.auto" [class.bg-warning/10]="!pause.auto"
+        role="status">
+        <span class="mt-0.5 flex flex-none" [class.text-danger]="pause.auto" [class.text-warning]="!pause.auto">
+          <app-icon [path]="mdiAlertOutline" [size]="18" />
+        </span>
+        <div class="min-w-0 flex-1 text-xs leading-relaxed">
+          <div class="font-semibold" [class.text-danger]="pause.auto" [class.text-warning]="!pause.auto">
+            Queue paused
+          </div>
+          @if (pause.reason) {
+            <div class="text-fg">{{ pause.reason }}</div>
+          }
+        </div>
+        <button class="btn sm flex-none" type="button" (click)="resumeQueue()">
+          <app-icon [path]="mdiPlay" [size]="14" />
+          Resume
+        </button>
+      </div>
+    }
+  </section>
+}
 
 <section class="card" aria-label="Awaiting review">
   <div class="panel-head card-head">

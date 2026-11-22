@@ -69,3 +69,50 @@ def is_cancelled(asset_id):
     with _state_lock:
         job = _jobs.get(asset_id)
         return bool(job and job.get("_cancel"))
+
+
+# --- worker pause / resume ---
+_worker_cond = threading.Condition(_state_lock)
+_pause_state = {"manual": False, "auto": False, "reason": None, "gen": 0}
+
+
+def pause_status():
+    with _state_lock:
+        manual = bool(_pause_state["manual"])
+        auto = bool(_pause_state["auto"])
+        return {
+            "paused": manual or auto,
+            "manual": manual,
+            "auto": auto,
+            "reason": _pause_state["reason"],
+        }
+
+
+def set_manual_pause(paused):
+    with _worker_cond:
+        _pause_state["manual"] = bool(paused)
+        if paused and not _pause_state["auto"]:
+            _pause_state["reason"] = "Paused by user"
+        elif not paused and not _pause_state["auto"]:
+            _pause_state["reason"] = None
+        _pause_state["gen"] += 1
+        _worker_cond.notify_all()
+
+
+def set_auto_pause(paused, reason=None):
+    with _worker_cond:
+        _pause_state["auto"] = bool(paused)
+        if paused:
+            _pause_state["reason"] = reason
+        elif _pause_state["manual"]:
+            _pause_state["reason"] = "Paused by user"
+        else:
+            _pause_state["reason"] = None
+        _pause_state["gen"] += 1
+        _worker_cond.notify_all()
+
+
+def wake_worker():
+    with _worker_cond:
+        _pause_state["gen"] += 1
+        _worker_cond.notify_all()

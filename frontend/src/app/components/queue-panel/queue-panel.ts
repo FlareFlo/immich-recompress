@@ -1,18 +1,23 @@
 import { ChangeDetectionStrategy, Component, effect, inject, output, signal } from '@angular/core';
 import { NgClass } from '@angular/common';
 import {
+  mdiAlertOutline,
   mdiArrowRight,
   mdiCheck,
   mdiClose,
   mdiDeleteOutline,
   mdiEyeOutline,
   mdiFileReplaceOutline,
+  mdiHarddisk,
   mdiOpenInNew,
+  mdiPause,
+  mdiPlay,
 } from '@mdi/js';
 import { IconComponent } from '../icon/icon';
 import { StoreService } from '../../services/store.service';
 import { ApiService } from '../../services/api.service';
 import { JobPublic, JobStatus } from '../../models/api.models';
+import { formatBytes } from '../../utils/format-bytes';
 import { statusLabel } from '../../utils/job-status';
 
 @Component({
@@ -27,13 +32,17 @@ export class QueuePanelComponent {
   readonly store = inject(StoreService);
   private readonly api = inject(ApiService);
 
+  readonly mdiAlertOutline = mdiAlertOutline;
   readonly mdiArrowRight = mdiArrowRight;
   readonly mdiCheck = mdiCheck;
   readonly mdiClose = mdiClose;
   readonly mdiDeleteOutline = mdiDeleteOutline;
   readonly mdiEyeOutline = mdiEyeOutline;
   readonly mdiFileReplaceOutline = mdiFileReplaceOutline;
+  readonly mdiHarddisk = mdiHarddisk;
   readonly mdiOpenInNew = mdiOpenInNew;
+  readonly mdiPause = mdiPause;
+  readonly mdiPlay = mdiPlay;
 
   readonly reviewRequested = output<string>();
   readonly jobsRefresh = output<void>();
@@ -79,6 +88,28 @@ export class QueuePanelComponent {
 
   clearDone(): void {
     this.api.clearDone().subscribe(() => this.jobsRefresh.emit());
+  }
+
+  pauseQueue(): void {
+    this.api.pauseQueue().subscribe(res => {
+      this.store.queuePause.set(res.pause);
+      if (res.temp_storage) this.store.tempStorage.set(res.temp_storage);
+      this.jobsRefresh.emit();
+    });
+  }
+
+  resumeQueue(): void {
+    this.api.resumeQueue().subscribe(res => {
+      this.store.queuePause.set(res.pause);
+      if (res.temp_storage) this.store.tempStorage.set(res.temp_storage);
+      this.jobsRefresh.emit();
+    });
+  }
+
+  readonly humanBytes = formatBytes;
+
+  tempUsedRatio(pct: number): number {
+    return Math.min(1, Math.max(0, pct / 100));
   }
 
   isActive(id: string): boolean {

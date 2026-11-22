@@ -9,13 +9,121 @@ import os
 import shutil
 import subprocess
 
-from backend.config import CSV_LOG, MIN_FREE_BYTES, WORK_DIR
+from backend.config import (
+    BACKUP_DIR, CSV_LOG, MIN_FREE_BYTES, TEMP_MAX_USED_PCT,
+    TEMP_MIN_FREE_BYTES, WORK_DIR,
+)
+
+
+def _existing_path(path):
+    """Return path or its nearest existing ancestor for disk_usage/stat."""
+    cur = os.path.abspath(path)
+    while cur and not os.path.exists(cur):
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return cur
+
+
+def _dir_bytes(path):
+    """Return total regular-file bytes inside path (0 if missing/unreadable)."""
+    if not path or not os.path.isdir(path):
+        return 0
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path, followlinks=False):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _is_low_space(total_bytes, free_bytes, used_pct, max_used_pct, min_free_bytes):
+    pct_hit = total_bytes > 0 and used_pct >= max_used_pct
+    free_hit = total_bytes > min_free_bytes and free_bytes <= min_free_bytes
+    return pct_hit or free_hit
+
+
+def _fs_stats(path, max_used_pct, min_free_bytes):
+    probe = _existing_path(path)
+    usage = shutil.disk_usage(probe)
+    total = usage.total
+    free = usage.free
+    used = max(0, total - free)
+    used_pct = round((used / total) * 100.0, 1) if total > 0 else 0.0
+    low_space = _is_low_space(total, free, used_pct, max_used_pct, min_free_bytes)
+    dev = os.stat(probe).st_dev
+    return {
+        "path": path,
+        "total": total,
+        "used": used,
+        "free": free,
+        "used_pct": used_pct,
+        "low_space": low_space,
+        "dev": dev,
+    }
+
+
+def temp_storage_info(work_dir=WORK_DIR, backup_dir=BACKUP_DIR,
+                      max_used_pct=TEMP_MAX_USED_PCT,
+                      min_free_bytes=TEMP_MIN_FREE_BYTES):
+    """Return temp-filesystem usage and intermediate file size held by the app."""
+    work_bytes = _dir_bytes(work_dir)
+    same_dir = os.path.abspath(backup_dir) == os.path.abspath(work_dir)
+    backup_bytes = 0 if same_dir else _dir_bytes(backup_dir)
+    app_bytes = work_bytes + backup_bytes
+
+    try:
+        primary = _fs_stats(work_dir, max_used_pct, min_free_bytes)
+        if not same_dir:
+            secondary = _fs_stats(backup_dir, max_used_pct, min_free_bytes)
+            if secondary["dev"] != primary["dev"]:
+                # If backups live on a separate mount and it's the tighter one, surface it.
+                if (secondary["low_space"] and not primary["low_space"]) or (
+                    secondary["low_space"] == primary["low_space"]
+                    and secondary["used_pct"] > primary["used_pct"]
+                ):
+                    primary = secondary
+    except OSError:
+        return {
+            "path": work_dir,
+            "total": 0,
+            "used": 0,
+            "free": 0,
+            "used_pct": 0.0,
+            "app_bytes": app_bytes,
+            "work_bytes": work_bytes,
+            "backup_bytes": backup_bytes,
+            "max_used_pct": max_used_pct,
+            "min_free_bytes": min_free_bytes,
+            "low_space": False,
+        }
+
+    return {
+        "path": primary["path"],
+        "total": primary["total"],
+        "used": primary["used"],
+        "free": primary["free"],
+        "used_pct": primary["used_pct"],
+        "app_bytes": app_bytes,
+        "work_bytes": work_bytes,
+        "backup_bytes": backup_bytes,
+        "max_used_pct": max_used_pct,
+        "min_free_bytes": min_free_bytes,
+        "low_space": primary["low_space"],
+    }
+
 
 def has_free_space(num_bytes):
     """True if the work dir has room for ~2.5x the asset (src + out + backup)."""
     try:
         need = int(num_bytes) * 5 // 2 + MIN_FREE_BYTES
-        return shutil.disk_usage(WORK_DIR).free >= need, need
+        return shutil.disk_usage(_existing_path(WORK_DIR)).free >= need, need
     except OSError:
         return True, 0
 

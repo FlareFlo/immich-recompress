@@ -1,12 +1,13 @@
 import { Injectable, OnDestroy, signal } from '@angular/core';
 import { Subject } from 'rxjs';
-import { SseJobUpdate } from '../models/api.models';
+import { SseJobUpdate, TempStorageInfo } from '../models/api.models';
 
 @Injectable({ providedIn: 'root' })
 export class EventsService implements OnDestroy {
   readonly connected = signal(false);
   readonly jobUpdate$ = new Subject<SseJobUpdate>();
   readonly queueUpdate$ = new Subject<void>();
+  readonly tempStorage$ = new Subject<TempStorageInfo>();
 
   private es: EventSource | null = null;
   private reconnectDelay = 3000;
@@ -38,6 +39,12 @@ export class EventsService implements OnDestroy {
     });
     this.es.addEventListener('queue_update', () => {
       this.queueUpdate$.next();
+    });
+    this.es.addEventListener('temp_storage', (e: MessageEvent) => {
+      try {
+        const d: TempStorageInfo = JSON.parse(e.data);
+        this.tempStorage$.next(d);
+      } catch { /* ignore */ }
     });
     this.es.onerror = () => {
       this.connected.set(false);

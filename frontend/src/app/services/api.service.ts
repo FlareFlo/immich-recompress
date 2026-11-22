@@ -2,7 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import {
-  Capabilities, JobsResponse, Settings, StatusResponse, VideoDetail,
+  Capabilities, JobsResponse, QueuePauseState, Settings, StatusResponse, TempStorageInfo, VideoDetail,
   VideosResponse, VideoSummary, User, KeyOwner, MediaType, SortField, SortOrder,
   CaptureDateFilter, BrowseOption, MetadataFilter,
 } from '../models/api.models';
@@ -97,6 +97,20 @@ export class ApiService {
 
   clearDone(): Observable<{ removed: string[] }> {
     return this.http.post<{ removed: string[] }>('/api/clear', {});
+  }
+
+  pauseQueue(): Observable<{ ok: boolean; pause: QueuePauseState; temp_storage: TempStorageInfo }> {
+    return this.http.post<{ ok: boolean; pause: QueuePauseState; temp_storage: TempStorageInfo }>(
+      '/api/queue/pause',
+      {},
+    );
+  }
+
+  resumeQueue(): Observable<{ ok: boolean; pause: QueuePauseState; temp_storage: TempStorageInfo }> {
+    return this.http.post<{ ok: boolean; pause: QueuePauseState; temp_storage: TempStorageInfo }>(
+      '/api/queue/resume',
+      {},
+    );
   }
 
   thumbnailUrl(id: string, size = 'thumbnail'): string {

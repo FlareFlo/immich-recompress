@@ -17,14 +17,15 @@ from backend.config import (
     WORK_DIR, get_env, human_duration, human_size, utcnow_iso,
 )
 from backend.state import (
-    _asset_key_lock, _asset_key_map, _jobs, _queue_order, _state_lock,
-    _sub_lock, _subscribers, _work_queue, active_id, is_cancelled,
-    register_proc, set_active_id, unregister_proc,
+    _asset_key_lock, _asset_key_map, _jobs, _pause_state, _queue_order,
+    _state_lock, _sub_lock, _subscribers, _work_queue, _worker_cond,
+    active_id, is_cancelled, register_proc, set_active_id, unregister_proc,
+    wake_worker,
 )
 from backend.db import db_load_jobs, db_save_job
 from backend.media import (
     append_csv_log, build_cjxl_cmd, build_ffmpeg_image_cmd, build_handbrake_cmd,
-    ffprobe_info, has_free_space, image_preview_path,
+    ffprobe_info, has_free_space, image_preview_path, temp_storage_info,
 )
 from backend.immich_api import (
     asset_codec, capture_metadata_fields, copy_asset_metadata, copy_asset_tags, download_original,
@@ -416,6 +417,7 @@ def do_replace(env, asset_id, name, out_path, old_size, new_size, savings, codec
     append_csv_log([utcnow_iso(), asset_id, name, codec or "",
                     old_size, new_size, savings, "done"])
     cleanup_encoded_file(out_path)
+    wake_worker()
     persist_if_terminal(asset_id)
     broadcast_queue_update()
     return True
@@ -446,6 +448,7 @@ def do_strip_motion(env, image_id, video_id, name, video_size):
     emit_job_update(image_id)
     append_csv_log([utcnow_iso(), image_id, name, "MOTION",
                     video_size, 0, video_size, "done"])
+    wake_worker()
     persist_if_terminal(image_id)
     broadcast_queue_update()
     return True
@@ -501,6 +504,7 @@ def do_recompress_motion(env, image_id, old_video_id, out_path, video_name,
     append_csv_log([utcnow_iso(), image_id, video_name, "MOTION",
                     old_size, new_size, savings, "done"])
     cleanup_temp(out_path)
+    wake_worker()
     persist_if_terminal(image_id)
     broadcast_queue_update()
     return True
@@ -960,6 +964,15 @@ def process_motionphoto_job(env, asset_id, params):
         return
 
     if motion_action == "recompress":
+        ok_space, need = has_free_space(video_size)
+        if video_size and not ok_space:
+            free = shutil.disk_usage(WORK_DIR).free
+            update_job(asset_id, status="error",
+                       log=f"Not enough disk space: {human_size(free)} free, ~{human_size(need)} needed")
+            emit_job_update(asset_id)
+            append_csv_log([utcnow_iso(), asset_id, name, "MOTION", video_size, None, None, "error"])
+            broadcast_queue_update()
+            return
         vext = os.path.splitext(video_name)[1] or ".mov"
         src_path = os.path.join(WORK_DIR, f"{video_id}_src{vext}")
         out_path = os.path.join(WORK_DIR, f"{asset_id}_out.mp4")
@@ -1248,11 +1261,124 @@ def process_job(asset_id):
                savings, src_codec)
 
 
+def temp_pause_reason(storage, job_size=0):
+    """Return a pause reason string when temp storage is near full or needs bench cleanup."""
+    if storage.get("low_space"):
+        return (
+            f"Temp storage is {storage['used_pct']:.0f}% full "
+            f"({human_size(storage['free'])} free) — confirm or discard items in review, "
+            "or free space to resume"
+        )
+    if job_size:
+        ok_space, need = has_free_space(job_size)
+        if not ok_space and storage.get("app_bytes", 0) > 0 and (
+                storage["free"] + storage["app_bytes"] >= need):
+            return (
+                f"Only {human_size(storage['free'])} free in temp storage "
+                f"(~{human_size(need)} needed) — confirm or discard items in review to continue"
+            )
+    return None
+
+
+def _clear_auto_pause_locked():
+    if _pause_state["auto"]:
+        _pause_state["auto"] = False
+        _pause_state["reason"] = "Paused by user" if _pause_state["manual"] else None
+        return True
+    return False
+
+
+def _wait_if_paused(asset_id, poll_interval=3.0):
+    """Wait while the queue is manually paused or temp storage is low.
+
+    Returns True when the job is still queued and ready to run, or False if it
+    was cancelled or removed while waiting.
+    """
+    while True:
+        notify_ui = False
+        job_size = 0
+        with _worker_cond:
+            job = _jobs.get(asset_id)
+            if not job or job.get("_cancel") or job["status"] != "queued":
+                notify_ui = _clear_auto_pause_locked()
+                should_run = False
+            else:
+                job_size = job.get("size") or 0
+                should_run = True
+        if not should_run:
+            if notify_ui:
+                broadcast_queue_update()
+            return False
+
+        storage = temp_storage_info(work_dir=WORK_DIR, backup_dir=BACKUP_DIR)
+        space_reason = temp_pause_reason(storage, job_size)
+
+        notify_ui = False
+        wait_needed = False
+        should_run = False
+        gen = 0
+        with _worker_cond:
+            job = _jobs.get(asset_id)
+            if not job or job.get("_cancel") or job["status"] != "queued":
+                notify_ui = _clear_auto_pause_locked()
+                should_run = False
+            else:
+                manual = _pause_state["manual"]
+                if manual or space_reason:
+                    new_auto = bool(space_reason)
+                    new_reason = space_reason if space_reason else "Paused by user"
+                    if _pause_state["auto"] != new_auto or _pause_state["reason"] != new_reason:
+                        _pause_state["auto"] = new_auto
+                        _pause_state["reason"] = new_reason
+                        notify_ui = True
+                    wait_needed = True
+                    gen = _pause_state["gen"]
+                else:
+                    if _pause_state["auto"] or _pause_state["reason"]:
+                        _pause_state["auto"] = False
+                        _pause_state["reason"] = None
+                        notify_ui = True
+                    should_run = True
+
+        if notify_ui:
+            broadcast_queue_update()
+        if not wait_needed:
+            return should_run
+
+        cancelled_while_waiting = False
+        notify_cancel = False
+        with _worker_cond:
+            job = _jobs.get(asset_id)
+            if not job or job.get("_cancel") or job["status"] != "queued":
+                notify_cancel = _clear_auto_pause_locked()
+                cancelled_while_waiting = True
+            elif not _pause_state["manual"] and not _pause_state["auto"]:
+                pass
+            elif _pause_state["gen"] == gen:
+                _worker_cond.wait(timeout=poll_interval)
+                job = _jobs.get(asset_id)
+                if not job or job.get("_cancel") or job["status"] != "queued":
+                    notify_cancel = _clear_auto_pause_locked()
+                    cancelled_while_waiting = True
+        if cancelled_while_waiting:
+            if notify_cancel:
+                broadcast_queue_update()
+            return False
+
+
 def worker_loop():
     """Background worker: process queued jobs one at a time."""
     while True:
         asset_id = _work_queue.get()
         try:
+            if not _wait_if_paused(asset_id):
+                with _state_lock:
+                    job = _jobs.get(asset_id)
+                    if job and job.get("_cancel") and job["status"] == "queued":
+                        job["status"] = "cancelled"
+                    set_active_id(None)
+                broadcast_queue_update()
+                continue
             with _state_lock:
                 job = _jobs.get(asset_id)
                 if not job or job.get("_cancel") or job["status"] != "queued":

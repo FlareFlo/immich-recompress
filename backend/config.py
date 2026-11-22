@@ -60,6 +60,8 @@ USER_CACHE_TTL = 300        # seconds (5 minutes)
 ASSET_CACHE_TTL = 60        # reuse a completed library scan across page changes
 HTTP_TIMEOUT = 30           # seconds for normal Immich calls
 MIN_FREE_BYTES = 200 * 1024 ** 2   # safety buffer for the work dir
+TEMP_MAX_USED_PCT = 90.0           # auto-pause queue when temp storage reaches 90% used
+TEMP_MIN_FREE_BYTES = 1024 ** 3    # auto-pause queue when <= 1 GiB free remains
 TERMINAL_STATES = {"done", "downloaded", "encoded", "skipped",
                    "error", "cancelled", "discarded"}
 

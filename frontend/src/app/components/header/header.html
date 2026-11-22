@@ -23,6 +23,17 @@
   <span class="min-w-0 flex-1"></span>
 
   <div class="flex min-w-0 items-center gap-2 max-[860px]:gap-1" role="group" aria-label="Dependencies">
+    @if (store.tempStorage(); as tmp) {
+      <span
+        class="pill"
+        [class.bad]="tmp.low_space"
+        [class.warn]="!tmp.low_space && tmp.used_pct >= 75"
+        [class.dep-ok]="!tmp.low_space && tmp.used_pct < 75"
+        [title]="tempTooltip(tmp)"
+      >
+        /tmp {{ tmp.used_pct.toFixed(0) }}%
+      </span>
+    }
     <span class="pill" [class.bad]="!store.handbrake()" [class.dep-ok]="store.handbrake()" title="HandBrakeCLI">HandBrakeCLI</span>
     <span class="pill" [class.bad]="!store.ffprobe()" [class.dep-ok]="store.ffprobe()" title="ffprobe">ffprobe</span>
     <span class="pill" [class.bad]="!store.ffmpeg()" [class.dep-ok]="store.ffmpeg()" title="ffmpeg">ffmpeg</span>

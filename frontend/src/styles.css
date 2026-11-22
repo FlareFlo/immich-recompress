@@ -437,6 +437,12 @@
   .pill.bad::before {
     background: var(--color-danger);
   }
+  .pill.warn {
+    color: var(--color-warning);
+  }
+  .pill.warn::before {
+    background: var(--color-warning);
+  }
   .pill.plain::before {
     display: none;
   }
